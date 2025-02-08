@@ -1,4 +1,6 @@
 import re
+from typing import Any
+from typing import ClassVar
 
 import pandas as pd
 import requests
@@ -7,24 +9,102 @@ from bs4 import BeautifulSoup
 from scrapy import Request
 
 
+def clean_text(text):
+    """Удаляет сноски и лишние пробелы."""
+    text = re.sub(r"\[\d+\]|\[.*?\]", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def remove_refs(lst):
+    """Удаляет ссылки из списка."""
+    return [s for s in lst
+            if not (s.startswith('[') and s.endswith(']'))]
+
+
+def get_infobox_value(label, infobox):
+    """Функция для извлечения одиночных значений из инфобокса."""
+    if not infobox:
+        return None
+    row = infobox.find("th", string=re.compile(label))
+    if row:
+        value = row.find_next_sibling("td")
+        if value:
+            return clean_text(value.text)
+    return None
+
+
+def get_infobox_imdb_link(infobox):
+    """Функция для извлечения ссылки на IMDB из инфобокса."""
+    if not infobox:
+        return None
+    row = infobox.find("th", string=re.compile("IMDb"))
+    if row:
+        value = row.find_next_sibling("td")
+        if value:
+            return value.find("a").get("href")
+    return None
+
+
+def get_list_from_infobox(label, infobox):
+    """Функция для извлечения списка значений из инфобокса."""
+    if not infobox:
+        return []
+    row = infobox.find("th", string=re.compile(label))
+    if not row:
+        return []
+
+    td = row.find_next_sibling("td")
+    if not td:
+        return []
+
+    # Пытаемся извлечь ссылки
+    items = [a.text for a in td.find_all("a") if a.text.strip()]
+    if not items:
+        # Пытаемся извлечь списки, если строки разделены тегом </br> то преобразуем в список
+        items = [", ".join(s.stripped_strings) for s in td.find_all("span") if s.text.strip()]
+
+    # Удаляем ссылки
+    return remove_refs(items)
+
+
+def get_original_title(infobox):
+    """Извлекает оригинальное название фильма, если оно есть."""
+    if not infobox:
+        return None
+
+    rows = infobox.find_all("tr")
+    # Проверяем вторую строку (если она есть)
+    if len(rows) > 1:
+        second_row = rows[1].find("td", {"colspan": "2"})
+        if second_row:  # noqa: SIM102
+            # Проверяем, что это не заголовок (<th>) и не изображение (<img>)
+            if not rows[1].find("th") and not second_row.find("img"):
+                deepest_span = second_row.find_all("span")  # Находим последний <span>
+                if deepest_span:
+                    return deepest_span[-1].get_text(strip=True)
+    return None
+
+
 class MoviesSpider(scrapy.Spider):
     name = "movies"
-    allowed_domains = ["ru.wikipedia.org"]
-    start_urls = [
-        "https://ru.wikipedia.org/wiki/Категория:Фильмы_по_алфавиту"
+    allowed_domains: ClassVar[list[str]] = ["ru.wikipedia.org"]
+    start_urls: ClassVar[list[str]] = [
+        "https://ru.wikipedia.org/wiki/Категория:Фильмы_по_алфавиту",
     ]
 
     csv_filename = "movies.csv"
 
-    def __init__(self):
-        """Создаем пустой CSV-файл"""
+    def __init__(self, **kwargs: Any):
+        """Создаем пустой CSV-файл."""
+        super().__init__(**kwargs)
         df = pd.DataFrame(columns=["title", "original_title", "genre", "director", "country", "year", "imdb_rating"])
         df.to_csv(self.csv_filename, index=False, encoding="utf-8-sig")
 
     def parse(self, response):
-        """Собираем ссылки на фильмы, проверяем корректность страницы"""
+        """Собираем ссылки на фильмы, проверяем корректность страницы."""
         if not response.css("div#mw-pages"):
-            self.logger.warning(f"Proxy error or incorrect page loaded: {response.url}")
+            self.logger.warning(f"Ошибка загрузки: {response.url}")
             yield Request(url=response.url, callback=self.parse, dont_filter=True)
 
         soup = BeautifulSoup(response.text, "lxml")
@@ -32,29 +112,28 @@ class MoviesSpider(scrapy.Spider):
 
         if columns:
             # Собираем ссылки на фильмы
-            for idx, movie_link in enumerate(columns.find_all("a")):
-                movie_link = "https://ru.wikipedia.org" + movie_link.get("href")
-                yield response.follow(movie_link, callback=self.parse_movie)
+            for _, movie_link in enumerate(columns.find_all("a")):
+                movie_link_full = "https://ru.wikipedia.org" + movie_link.get("href")
+                yield response.follow(movie_link_full, callback=self.parse_movie)
 
         # Пагинация - продолжаем, если есть ссылка с текстом "Следующая страница"
         next_page = response.css("div#mw-pages a::text").getall()
         next_page_links = response.css("div#mw-pages a::attr(href)").getall()
 
-        # Ищем ссылки с текстом "Следующая страница" и продолжаем перебирать
         for i, link_text in enumerate(next_page):
             if "Следующая страница" in link_text:
                 yield response.follow(next_page_links[i], self.parse)
                 break
 
     def parse_movie(self, response):
-        """Собираем данные о фильме"""
+        """Собираем данные о фильме."""
         soup = BeautifulSoup(response.text, "html.parser")
 
         # Заголовок страницы
         title_element = soup.find("h1", class_="firstHeading")
 
         if not title_element:
-            self.logger.warning(f"Proxy error or incorrect movie page loaded: {response.url}")
+            self.logger.warning(f"Ошибка загрузки страницы фильма: {response.url}")
             yield Request(url=response.url, callback=self.parse_movie, dont_filter=True)
             return
 
@@ -63,80 +142,7 @@ class MoviesSpider(scrapy.Spider):
         # Инфобокс (таблица с данными о фильме)
         infobox = soup.find("table", class_="infobox")
 
-        def clean_text(text):
-            """Удаляет сноски и лишние пробелы"""
-            text = re.sub(r"\[\d+\]|\[.*?\]", "", text)
-            text = re.sub(r"\s+", " ", text)
-            return text.strip()
-
-        def remove_refs(lst):
-            """Удаляет ссылки из списка"""
-            return [s for s in lst
-                    if not (s.startswith('[') and s.endswith(']'))]
-
-        def get_infobox_value(label):
-            """Функция для извлечения одиночных значений из инфобокса"""
-            if not infobox:
-                return None
-            row = infobox.find("th", string=re.compile(label))
-            if row:
-                value = row.find_next_sibling("td")
-                if value:
-                    return clean_text(value.text)
-            return None
-
-        def get_infobox_imdb_link():
-            """Функция для извлечения ссылки на IMDB из инфобокса"""
-            if not infobox:
-                return None
-            row = infobox.find("th", string=re.compile("IMDb"))
-            if row:
-                value = row.find_next_sibling("td")
-                if value:
-                    return value.find("a").get("href")
-            return None
-
-        def get_list_from_infobox(label):
-            """Функция для извлечения списка значений из инфобокса"""
-            if not infobox:
-                return []
-            row = infobox.find("th", string=re.compile(label))
-            if not row:
-                return []
-
-            td = row.find_next_sibling("td")
-            if not td:
-                return []
-
-            # Пытаемся извлечь ссылки
-            items = [a.text for a in td.find_all("a") if a.text.strip()]
-            if not items:
-                # Пытаемся извлечь списки, если строки разделены тегом </br> то преобразуем в список
-                items = [", ".join(s.stripped_strings) for s in td.find_all("span") if s.text.strip()]
-
-            # Удаляем ссылки
-            items = remove_refs(items)
-
-            return items
-
-        def get_original_title():
-            """ Извлекает оригинальное название фильма, если оно есть """
-            if not infobox:
-                return None
-
-            rows = infobox.find_all("tr")
-            # Проверяем вторую строку (если она есть)
-            if len(rows) > 1:
-                second_row = rows[1].find("td", {"colspan": "2"})
-                if second_row:
-                    # Проверяем, что это не заголовок (<th>) и не изображение (<img>)
-                    if not rows[1].find("th") and not second_row.find("img"):
-                        deepest_span = second_row.find_all("span")  # Находим последний <span>
-                        if deepest_span:
-                            return deepest_span[-1].get_text(strip=True)
-            return None
-
-        original_title = get_original_title()
+        original_title = get_original_title(infobox)
         if not original_title:
             # Если оригинального названия нет, то пытаемся извлечь его из названия
             clean_title = None
@@ -149,22 +155,22 @@ class MoviesSpider(scrapy.Spider):
                 original_title = title
 
         # Получаем жанр, страну и режиссёра
-        genre = get_list_from_infobox("Жанр")
-        country = get_list_from_infobox("Стран")
-        director = get_list_from_infobox("Режиссёр")
+        genre = get_list_from_infobox("Жанр", infobox)
+        country = get_list_from_infobox("Стран", infobox)
+        director = get_list_from_infobox("Режиссёр", infobox)
 
         # Год выхода
-        year = get_infobox_value("Год")
+        year = get_infobox_value("Год", infobox)
         if not year:
-            year = get_infobox_value("Дата выхода")
+            year = get_infobox_value("Дата выхода", infobox)
         if not year:
-            year = get_infobox_value("Первый показ")
+            year = get_infobox_value("Первый показ", infobox)
         if year:
             match = re.search(r"\b\d{4}\b", year)
             year = match.group(0) if match else None
 
         # Получаем рейтинг IMDb
-        imdb_link = get_infobox_imdb_link()
+        imdb_link = get_infobox_imdb_link(infobox)
 
         original_title_search = original_title
         russian_title_search = title
@@ -182,11 +188,11 @@ class MoviesSpider(scrapy.Spider):
         movie_data = {
             'title': title,
             'original_title': original_title,
-            'genre': ", ".join(genre),  # Список преобразуем в строку
+            'genre': ", ".join(genre),
             'director': ", ".join(director),
             'country': ", ".join(country),
             'year': year,
-            'imdb_rating': imdb_rating
+            'imdb_rating': imdb_rating,
         }
 
         # Сохраняем в CSV
@@ -195,12 +201,12 @@ class MoviesSpider(scrapy.Spider):
         yield movie_data
 
     def get_imdb_rating(self, movie_title, imdb_link=None):
-        """Функция для получения рейтинга IMDb"""
+        """Функция для получения рейтинга IMDb."""
         search_url = f"https://www.imdb.com/find/?q={movie_title}&s=tt"
         headers = {"User-Agent": "Mozilla/5.0"}
 
         if not imdb_link:
-            response = requests.get(search_url, headers=headers)
+            response = requests.get(search_url, headers=headers, timeout=10)
             soup = BeautifulSoup(response.text, "html.parser")
             # Получаем ссылку на первый найденный фильм
             first_result = soup.find("a", {"class": "ipc-metadata-list-summary-item__t"})
@@ -217,12 +223,12 @@ class MoviesSpider(scrapy.Spider):
             return None
 
         # Запрашиваем IMDb-страницу
-        imdb_response = requests.get(imdb_link, headers=headers)
+        imdb_response = requests.get(imdb_link, headers=headers, timeout=10)
         imdb_soup = BeautifulSoup(imdb_response.text, "html.parser")
 
         # Проверяем, действительно ли мы на IMDb (поиск логотипа IMDb)
         if not imdb_soup.find("a", {"id": "home_img_holder"}):
-            self.logger.warning(f"Proxy error or incorrect IMDb page loaded: {imdb_link}")
+            self.logger.warning(f"Ошибка загрузки страницы IMDb: {imdb_link}")
             return self.get_imdb_rating(movie_title)  # Повторный запрос
 
         # Извлекаем рейтинг
@@ -233,14 +239,14 @@ class MoviesSpider(scrapy.Spider):
         return None
 
     def save_to_csv(self, new_data):
-        """Добавляет фильм в CSV-файл, если он еще не сохранен"""
+        """Добавляет фильм в CSV-файл, если он еще не сохранен."""
         df = pd.read_csv(self.csv_filename, encoding="utf-8-sig")
         new_raw = pd.DataFrame([new_data])
 
         # Проверяем, есть ли фильм уже в таблице
         if (not df[df["title"] == new_raw["title"].iloc[0]].empty or
                 new_raw["title"].iloc[0] == "Категория:Телефильмы по алфавиту"):
-            return None
+            return
 
         df = pd.concat([df, new_raw], ignore_index=True)
 
