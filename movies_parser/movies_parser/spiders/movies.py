@@ -160,11 +160,12 @@ class MoviesSpider(scrapy.Spider):
         director = get_list_from_infobox("Режиссёр", infobox)
 
         # Год выхода
-        year = get_infobox_value("Год", infobox)
-        if not year:
-            year = get_infobox_value("Дата выхода", infobox)
-        if not year:
-            year = get_infobox_value("Первый показ", infobox)
+        year = next(
+            (get_infobox_value(label, infobox) for label in [
+                "Год", "Дата выхода", "Первый показ", "Дата премьеры"
+            ] if get_infobox_value(label, infobox)),
+            None
+        )
         if year:
             match = re.search(r"\b\d{4}\b", year)
             year = match.group(0) if match else None
@@ -173,7 +174,7 @@ class MoviesSpider(scrapy.Spider):
         imdb_link = get_infobox_imdb_link(infobox)
 
         original_title_search = original_title
-        russian_title_search = title
+        russian_title_search = re.sub(r"\s*\(фильм[^)]*\)", "", title)
 
         # Если есть год, то добавляем в поисковый запрос, чтобы не ошибиться с фильмом со схожим названием
         if year:
