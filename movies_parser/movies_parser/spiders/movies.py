@@ -68,12 +68,14 @@ def get_list_from_infobox(label, infobox):
     return remove_refs(items)
 
 
-def get_original_title(infobox):
+def get_original_title(title, infobox):
     """Извлекает оригинальное название фильма, если оно есть."""
     if not infobox:
         return None
 
     rows = infobox.find_all("tr")
+    original_title = None
+
     # Проверяем вторую строку (если она есть)
     if len(rows) > 1:
         second_row = rows[1].find("td", {"colspan": "2"})
@@ -82,8 +84,20 @@ def get_original_title(infobox):
             if not rows[1].find("th") and not second_row.find("img"):
                 deepest_span = second_row.find_all("span")  # Находим последний <span>
                 if deepest_span:
-                    return deepest_span[-1].get_text(strip=True)
-    return None
+                    original_title = deepest_span[-1].get_text(strip=True)
+
+    if not original_title:
+        # Если оригинального названия нет, то пытаемся извлечь его из названия
+        clean_title = None
+        if '(фильм' in title:
+            # Удаляем "(фильм)", т.к. он будет лишним для поиска в IMDb
+            clean_title = re.sub(r"\s*\(фильм[^)]*\)", "", title)
+        if clean_title:
+            original_title = clean_title
+        else:
+            original_title = title
+
+    return original_title
 
 
 class MoviesSpider(scrapy.Spider):
@@ -129,6 +143,9 @@ class MoviesSpider(scrapy.Spider):
         """Собираем данные о фильме."""
         soup = BeautifulSoup(response.text, "html.parser")
 
+        # Инфобокс (таблица с данными о фильме)
+        infobox = soup.find("table", class_="infobox")
+
         # Заголовок страницы
         title_element = soup.find("h1", class_="firstHeading")
 
@@ -139,20 +156,7 @@ class MoviesSpider(scrapy.Spider):
 
         title = title_element.text.strip() if title_element else None
 
-        # Инфобокс (таблица с данными о фильме)
-        infobox = soup.find("table", class_="infobox")
-
-        original_title = get_original_title(infobox)
-        if not original_title:
-            # Если оригинального названия нет, то пытаемся извлечь его из названия
-            clean_title = None
-            if '(фильм' in title:
-                # Удаляем "(фильм)", т.к. он будет лишним для поиска в IMDb
-                clean_title = re.sub(r"\s*\(фильм[^)]*\)", "", title)
-            if clean_title:
-                original_title = clean_title
-            else:
-                original_title = title
+        original_title = get_original_title(title, infobox)
 
         # Получаем жанр, страну и режиссёра
         genre = get_list_from_infobox("Жанр", infobox)
@@ -162,9 +166,9 @@ class MoviesSpider(scrapy.Spider):
         # Год выхода
         year = next(
             (get_infobox_value(label, infobox) for label in [
-                "Год", "Дата выхода", "Первый показ", "Дата премьеры"
+                "Год", "Дата выхода", "Первый показ", "Дата премьеры",
             ] if get_infobox_value(label, infobox)),
-            None
+            None,
         )
         if year:
             match = re.search(r"\b\d{4}\b", year)

@@ -33,8 +33,20 @@ scrapy crawl movies
 
 ## Структура проекта
 
-- `movies_parser/spiders/movies.py` — основной файл скрапера
-- `movies_parser/settings.py` — файл с настройками
+```
+intro_to_scrapy/
+│── movies_parser/             # Основная директория Scrapy-проекта
+│   ├── movies_parser/         
+│   │   ├── spiders/           # Каталог со скраперами
+│   │   │   ├── movies.py      # Основной скрапер для сбора данных о фильмах
+│   │   ├── items.py           # Определение структуры данных (Item)
+│   │   ├── middlewares.py     # Промежуточные обработки запросов и ответов
+│   │   ├── pipelines.py       # Логика обработки и сохранения данных
+│   │   ├── settings.py        # Файл конфигурации Scrapy
+│   │── scrapy.cfg             # Глобальный конфигурационный файл Scrapy
+│── README.md                  # Документация проекта
+│── requirements.txt           # Список зависимостей для установки
+```
 
 ## Как работает скрапер
 
