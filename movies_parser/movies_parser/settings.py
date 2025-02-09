@@ -51,9 +51,11 @@ CONCURRENT_REQUESTS = 32
 
 # Enable or disable downloader middlewares
 # See https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
-# DOWNLOADER_MIDDLEWARES = {
-#    "movies_parser.middlewares.MoviesParserDownloaderMiddleware": 543,
-# }
+DOWNLOADER_MIDDLEWARES = {
+    'scrapy.downloadermiddlewares.retry.RetryMiddleware': 90,
+    'scrapy_proxies.RandomProxy': 100,
+    'scrapy.downloadermiddlewares.httpproxy.HttpProxyMiddleware': 110,
+}
 
 # Enable or disable extensions
 # See https://docs.scrapy.org/en/latest/topics/extensions.html
@@ -62,10 +64,10 @@ CONCURRENT_REQUESTS = 32
 # }
 
 # Configure item pipelines
-# See https://docs.scrapy.org/en/latest/topics/item-pipeline.html
-# ITEM_PIPELINES = {
-#    "movies_parser.pipelines.MoviesParserPipeline": 300,
-# }
+ITEM_PIPELINES = {
+    "movies_parser.pipelines.DuplicatePipeline": 100,
+    "movies_parser.pipelines.MoviesParserPipeline": 300,
+}
 
 # Enable and configure the AutoThrottle extension (disabled by default)
 # See https://docs.scrapy.org/en/latest/topics/autothrottle.html
@@ -90,18 +92,13 @@ CONCURRENT_REQUESTS = 32
 
 # Set settings whose default value is deprecated to a future-proof value
 TWISTED_REACTOR = "twisted.internet.asyncioreactor.AsyncioSelectorReactor"
+# See https://docs.scrapy.org/en/latest/topics/item-pipeline.html
 FEED_EXPORT_ENCODING = "utf-8"
 
 # Retry many times since proxies often fail
 RETRY_TIMES = 10
 # Retry on most error codes since proxies fail for different reasons
 RETRY_HTTP_CODES = [500, 503, 504, 400, 403, 404, 408]
-
-DOWNLOADER_MIDDLEWARES = {
-    'scrapy.downloadermiddlewares.retry.RetryMiddleware': 90,
-    'scrapy_proxies.RandomProxy': 100,
-    'scrapy.downloadermiddlewares.httpproxy.HttpProxyMiddleware': 110,
-}
 
 # Proxy list containing entries like
 PROXY_LIST = Path(__file__).parent / "proxies.txt"

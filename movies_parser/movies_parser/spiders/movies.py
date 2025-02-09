@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 from typing import Any
 from typing import ClassVar
 
@@ -7,7 +8,7 @@ import requests
 import scrapy
 from bs4 import BeautifulSoup
 from scrapy import Request
-
+import urllib.parse
 
 def clean_text(text):
     """Удаляет сноски и лишние пробелы."""
@@ -42,7 +43,15 @@ def get_infobox_imdb_link(infobox):
     if row:
         value = row.find_next_sibling("td")
         if value:
-            return value.find("a").get("href")
+            href = value.find("a").get("href")
+            if not href.startswith("https://www.imdb.com/title/"):
+                # Ищем текст в value начинающийся с 'ID'
+                imdb_id = re.findall(r"ID\s(\d+)", value.text)
+                if not imdb_id:
+                    imdb_id = re.findall(r"ID(\d+)", value.text)
+                if imdb_id:
+                    return f"https://www.imdb.com/title/tt{imdb_id[-1]}/"
+            return href
     return None
 
 
@@ -107,16 +116,23 @@ class MoviesSpider(scrapy.Spider):
         "https://ru.wikipedia.org/wiki/Категория:Фильмы_по_алфавиту",
     ]
 
-    csv_filename = "movies.csv"
-
     def __init__(self, **kwargs: Any):
-        """Создаем пустой CSV-файл."""
         super().__init__(**kwargs)
-        df = pd.DataFrame(columns=["title", "original_title", "genre", "director", "country", "year", "imdb_rating"])
-        df.to_csv(self.csv_filename, index=False, encoding="utf-8-sig")
+        self.titles_seen = None
+        self.filepath = 'movies.csv'
+
+        if Path(self.filepath).exists():
+            df = pd.read_csv(self.filepath, encoding='utf-8')
+            self.titles_seen = set(df['title'].tolist())
+        else:
+            df = pd.DataFrame(
+                columns=["title", "original_title", "genre", "director", "country", "year", "imdb_rating"]
+            )
+            df.to_csv(self.filepath, index=False, encoding="utf-8-sig")
+            self.titles_seen = set()
 
     def parse(self, response):
-        """Собираем ссылки на фильмы, проверяем корректность страницы."""
+        """Собираем ссылки на фильмы, и собираем данные."""
         if not response.css("div#mw-pages"):
             self.logger.warning(f"Ошибка загрузки: {response.url}")
             yield Request(url=response.url, callback=self.parse, dont_filter=True)
@@ -124,9 +140,18 @@ class MoviesSpider(scrapy.Spider):
         soup = BeautifulSoup(response.text, "lxml")
         columns = soup.find("div", {"class": "mw-category-columns"})
 
-        if columns:
-            # Собираем ссылки на фильмы
-            for _, movie_link in enumerate(columns.find_all("a")):
+
+        # Собираем ссылки на фильмы, которые еще не были собраны
+        new_list_of_links = [title_href
+                             for title_href in columns.find_all("a")
+                             if title_href.text not in self.titles_seen]
+        if not new_list_of_links:
+            print("="*79)
+            print("NO NEW MOVIES FOUND ON PAGE: ", urllib.parse.unquote(response.url))
+            print("="*79)
+
+        if new_list_of_links:
+            for _, movie_link in enumerate(new_list_of_links):
                 movie_link_full = "https://ru.wikipedia.org" + movie_link.get("href")
                 yield response.follow(movie_link_full, callback=self.parse_movie)
 
@@ -200,9 +225,6 @@ class MoviesSpider(scrapy.Spider):
             'imdb_rating': imdb_rating,
         }
 
-        # Сохраняем в CSV
-        self.save_to_csv(movie_data)
-
         yield movie_data
 
     def get_imdb_rating(self, movie_title, imdb_link=None):
@@ -229,6 +251,10 @@ class MoviesSpider(scrapy.Spider):
 
         # Запрашиваем IMDb-страницу
         imdb_response = requests.get(imdb_link, headers=headers, timeout=10)
+        if imdb_response.status_code != 200:
+            self.logger.warning(f"Failed to fetch IMDb page {imdb_link}: {imdb_response.status_code}")
+            return None
+
         imdb_soup = BeautifulSoup(imdb_response.text, "html.parser")
 
         # Проверяем, действительно ли мы на IMDb (поиск логотипа IMDb)
@@ -242,18 +268,3 @@ class MoviesSpider(scrapy.Spider):
             return rating_element.text.strip().split("/")[0]  # Оставляем только число рейтинга
 
         return None
-
-    def save_to_csv(self, new_data):
-        """Добавляет фильм в CSV-файл, если он еще не сохранен."""
-        df = pd.read_csv(self.csv_filename, encoding="utf-8-sig")
-        new_raw = pd.DataFrame([new_data])
-
-        # Проверяем, есть ли фильм уже в таблице
-        if (not df[df["title"] == new_raw["title"].iloc[0]].empty or
-                new_raw["title"].iloc[0] == "Категория:Телефильмы по алфавиту"):
-            return
-
-        df = pd.concat([df, new_raw], ignore_index=True)
-
-        # Сохраняем в файл
-        df.to_csv(self.csv_filename, index=False, encoding="utf-8-sig")
