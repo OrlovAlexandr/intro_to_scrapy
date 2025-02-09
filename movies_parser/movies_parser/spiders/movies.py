@@ -8,7 +8,7 @@ import requests
 import scrapy
 from bs4 import BeautifulSoup
 from scrapy import Request
-import urllib.parse
+
 
 def clean_text(text):
     """Удаляет сноски и лишние пробелы."""
@@ -126,7 +126,7 @@ class MoviesSpider(scrapy.Spider):
             self.titles_seen = set(df['title'].tolist())
         else:
             df = pd.DataFrame(
-                columns=["title", "original_title", "genre", "director", "country", "year", "imdb_rating"]
+                columns=["title", "original_title", "genre", "director", "country", "year", "imdb_rating"],
             )
             df.to_csv(self.filepath, index=False, encoding="utf-8-sig")
             self.titles_seen = set()
@@ -140,15 +140,10 @@ class MoviesSpider(scrapy.Spider):
         soup = BeautifulSoup(response.text, "lxml")
         columns = soup.find("div", {"class": "mw-category-columns"})
 
-
         # Собираем ссылки на фильмы, которые еще не были собраны
         new_list_of_links = [title_href
                              for title_href in columns.find_all("a")
                              if title_href.text not in self.titles_seen]
-        if not new_list_of_links:
-            print("="*79)
-            print("NO NEW MOVIES FOUND ON PAGE: ", urllib.parse.unquote(response.url))
-            print("="*79)
 
         if new_list_of_links:
             for _, movie_link in enumerate(new_list_of_links):
@@ -251,7 +246,7 @@ class MoviesSpider(scrapy.Spider):
 
         # Запрашиваем IMDb-страницу
         imdb_response = requests.get(imdb_link, headers=headers, timeout=10)
-        if imdb_response.status_code != 200:
+        if imdb_response.status_code != 200:  # noqa: PLR2004
             self.logger.warning(f"Failed to fetch IMDb page {imdb_link}: {imdb_response.status_code}")
             return None
 
